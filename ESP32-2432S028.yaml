@@ -1,0 +1,371 @@
+#
+# Basic yaml code to get the ESP32-2432S028 working in Home Assistant as a 12-button "Stream Deck"
+# ============================================================
+# Author: Aaron Stewart @makeitworktech, with the help of ChatGPT.
+# GitHub: https://github.com/makeitworktech
+#
+# modified 20 Aug 2025 Larry Goodale @TTechGuy to make the button presses work correctly
+# adding in missing code from other yaml files and adding in substitutions for fonts, etc 
+#
+# ============================================================ 
+# NOTE:
+# In order for this to work you need to add the following settings in your secrets.yaml file:
+# - api_key
+# - ota_password
+# - wifi_ssid
+# - wifi_password
+# - ap_password
+#
+# Create a folder named fonts in your ESPHome folder, and copy the 
+# files fonts/Arimo-Regular.ttf and fonts/materialdesignicons-webfont.ttf there.
+#
+# ============================================================ 
+# General ESPHome Setup
+# ============================================================
+# Change the naming below, they will be the names used in Home Assistant
+
+substitutions:
+  font_direcotry: fonts/
+  width: "320"
+  height: "240"
+  device_name: esp32-cyd-2pt8
+  nice_name: ESP32-CYD-2.8in
+  weather_entity: weather.forecast_dom   # ← zmień na swoją encję pogody
+  gate_entity: cover.gate                 # ← zmień na encję bramy/garażu
+
+# ESPHome naming
+esphome:
+  name: ${device_name}                  # Device hostname
+  friendly_name: ${nice_name}           # Friendly name shown in Home Assistant
+ 
+# The ESP32-2432S028 uses a standard ESP32-WROVER, so we use esp32dev
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+# Set OTA password, enables updates via ESPHome
+ota:
+  platform: esphome
+  password: !secret ota_password
+
+# Setup WiFi credentials, references the wifi ssid and pass in secrets.yaml
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot in case wifi connection fails
+  ap:
+    ssid: $device_name Fallback Hotspot
+    password: !secret ap_password
+
+# Allows captive portal access when in fallback mode
+captive_portal:
+
+# ============================================================
+# Czas — SNTP, strefa czasowa Polska
+# ============================================================
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Warsaw
+    on_time_sync:
+      then:
+        - lvgl.label.update:
+            id: lbl_time
+            text: !lambda |-
+              static char buf[9];
+              auto t = id(sntp_time).now();
+              snprintf(buf, sizeof(buf), "%02d:%02d", t.hour, t.minute);
+              return buf;
+    on_time:
+      - seconds: 0
+        minutes: /1
+        then:
+          - lvgl.label.update:
+              id: lbl_time
+              text: !lambda |-
+                static char buf[9];
+                auto t = id(sntp_time).now();
+                snprintf(buf, sizeof(buf), "%02d:%02d", t.hour, t.minute);
+                return buf;
+
+# ============================================================
+# Czcionki
+# ============================================================
+font:
+  - file:
+      path: ${font_direcotry}Arimo-Regular.ttf
+      type: local
+    id: font_time
+    size: 52
+    glyphs: " 0123456789:"
+  - file:
+      path: ${font_direcotry}Arimo-Regular.ttf
+      type: local
+    id: font_info
+    size: 26
+    glyphs: " °0123456789C-."
+  - file:
+      path: ${font_direcotry}Arimo-Regular.ttf
+      type: local
+    id: font_btn
+    size: 28
+    glyphs: " ABCDEFGHIJKLMNOPQRSTUVWXYZÓabcdefghijklmnopqrstuvwxyzó"
+
+# ============================================================ 
+# Home Assistant related setup
+# ============================================================
+
+# ==== Lights ====
+light:
+# LCD backlight
+  - platform: monochromatic
+    output: backlight_pwm
+    name: "Display Backlight"
+    id: backlight
+    restore_mode: ALWAYS_ON
+# onboard rgb led
+  - platform: rgb
+    name: "Front LED"
+    id: front_led
+    restore_mode: ALWAYS_OFF
+    red: led_red
+    green: led_green
+    blue: led_blue
+
+
+
+# ==== Sensory przycisków dla Home Assistant ====
+binary_sensor:
+  - platform: template
+    name: "Button Otwórz"
+    id: btn_open_sensor
+  - platform: template
+    name: "Button Zamknij"
+    id: btn_close_sensor
+
+# ============================================================
+# Pogoda z Home Assistant
+# ============================================================
+sensor:
+  - platform: homeassistant
+    id: sensor_temp
+    entity_id: ${weather_entity}
+    attribute: temperature
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_temp
+            text: !lambda |-
+              static char buf[12];
+              snprintf(buf, sizeof(buf), "%.0f°C", x);
+              return buf;
+
+# ============================================================ 
+# Touchscreen Display related setup
+# ============================================================
+
+# SPI bus for TFT display and touch controller
+spi:
+  - id: tft
+    clk_pin: GPIO14
+    mosi_pin: GPIO13
+    # miso_pin: GPIO12
+  - id: touch
+    clk_pin: GPIO25
+    mosi_pin: GPIO32
+    miso_pin: GPIO39
+
+# Set a pin to control the backlight
+output:
+  - platform: ledc
+    pin: GPIO21
+    id: backlight_pwm
+    frequency: 1000 Hz
+    inverted: false
+  - platform: ledc
+    pin: GPIO04
+    id: led_red
+    inverted: true
+  - platform: ledc
+    pin: GPIO17  
+    id: led_blue 
+    inverted: true
+  - platform: ledc
+    pin: GPIO16  
+    id: led_green 
+    inverted: true
+
+# Tracks if recent touch occurred
+globals:
+  - id: recent_touch
+    type: bool
+    restore_value: no
+    initial_value: "true"
+
+# Defining the touchscreen for later use
+touchscreen:
+  platform: xpt2046
+  spi_id: touch
+  cs_pin: GPIO33
+  interrupt_pin: GPIO36
+  update_interval: 50ms
+  threshold: 400
+  calibration:
+    x_min: 180
+    x_max: 3800
+    y_min: 240
+    y_max: 3860
+  transform:
+    swap_xy: true
+    # mirror_x: true  # If you need to swap bottom to top for touch, uncomment this so it registers correctly
+  on_touch:
+    then:
+      - light.turn_on: backlight
+      - lambda: |-
+          id(recent_touch) = true;
+
+# Defining the display type and properties, and defining the buttons displayed.
+display:
+  - platform: ili9xxx
+    color_palette: 8BIT               # Lower memory usage
+    model: ST7789V                    # Display driver model
+    spi_id: tft
+    cs_pin: 
+      number: GPIO15
+      ignore_strapping_warning: true
+    dc_pin:
+      number: GPIO2
+      ignore_strapping_warning: true
+    invert_colors: false
+    transform:
+      swap_xy: true                   # Orient screen properly
+      mirror_x: true                  # if your top row is on the bottom, comment this line out or swtich to false
+    dimensions:
+      width: ${width}
+      height: ${height}
+
+# Defining the UI — time bar + 2 buttons
+lvgl:
+  buffer_size: 25%
+  pages:
+    - id: main_page
+      bg_color: 0x0A0A14
+      widgets:
+
+        # ── Pasek informacyjny (góra 76px) ──────────────────
+        - obj:
+            x: 0
+            y: 0
+            width: 320
+            height: 76
+            bg_color: 0x0F1B2D
+            bg_opa: COVER
+            border_width: 0
+            pad_all: 0
+            widgets:
+              - label:
+                  id: lbl_time
+                  x: 10
+                  y: 12
+                  text: "--:--"
+                  text_font: font_time
+                  text_color: 0xFFFFFF
+              - label:
+                  id: lbl_temp
+                  x: 218
+                  y: 24
+                  text: "--°C"
+                  text_font: font_info
+                  text_color: 0x88CCFF
+
+        # ── Linia podziału ──────────────────────────────────
+        - obj:
+            x: 0
+            y: 76
+            width: 320
+            height: 2
+            bg_color: 0x2A3A50
+            bg_opa: COVER
+            border_width: 0
+
+        # ── Przycisk OTWÓRZ (zielony) ───────────────────────
+        - button:
+            id: btn_open
+            x: 8
+            y: 86
+            width: 146
+            height: 146
+            bg_color: 0x1B4D2E
+            bg_opa: COVER
+            radius: 16
+            border_width: 2
+            border_color: 0x28A745
+            pressed:
+              bg_color: 0x28A745
+              bg_opa: COVER
+            widgets:
+              - label:
+                  id: lbl_btn_open
+                  text: "OPEN"
+                  text_font: font_btn
+                  text_color: 0xFFFFFF
+                  align: center
+            on_click:
+              then:
+                - homeassistant.action:
+                    action: cover.open_cover
+                    data:
+                      entity_id: ${gate_entity}
+                - binary_sensor.template.publish:
+                    id: btn_open_sensor
+                    state: ON
+                - delay: 500ms
+                - binary_sensor.template.publish:
+                    id: btn_open_sensor
+                    state: OFF
+
+        # ── Przycisk ZAMKNIJ (czerwony) ─────────────────────
+        - button:
+            id: btn_close
+            x: 166
+            y: 86
+            width: 146
+            height: 146
+            bg_color: 0x4D1B1B
+            bg_opa: COVER
+            radius: 16
+            border_width: 2
+            border_color: 0xDC3545
+            pressed:
+              bg_color: 0xDC3545
+              bg_opa: COVER
+            widgets:
+              - label:
+                  id: lbl_btn_close
+                  text: "CLOSE"
+                  text_font: font_btn
+                  text_color: 0xFFFFFF
+                  align: center
+            on_click:
+              then:
+                - homeassistant.action:
+                    action: cover.close_cover
+                    data:
+                      entity_id: ${gate_entity}
+                - binary_sensor.template.publish:
+                    id: btn_close_sensor
+                    state: ON
+                - delay: 500ms
+                - binary_sensor.template.publish:
+                    id: btn_close_sensor
+                    state: OFF
